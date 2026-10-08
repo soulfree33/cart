@@ -37,6 +37,7 @@ GAUGE_TARGET_W = 300    # Pillow 가 있을 때 표시 너비 (없으면 1/2 축
 RIGHT_PANEL_BASE_WIDTH = GAUGE_TARGET_W
 PLAYER_ROWS = 4         # 플레이어 목록이 항상 확보하는 줄 수
 CHARACTER_FILES = ("bajji.png", "marid.png", "dijini.png", "dao.png")  # 빨강, 핑크, 노랑, 파랑
+TRAP_IMAGE_FILES = {"mine": "trap_ufo_disc.png", "banana": "trap_banana_peel.png"}
 CHARACTER_BUTTON_H = 58
 COLOR_MENU_BASE_H = 108
 MARKER_SIZE = 44        # ▲ 크기 (원본 기준 px)
@@ -312,6 +313,7 @@ class GameFrame(ttk.Frame):
         self.color_box.grid(row=0, column=0, sticky="nw")
         self.gauge_images = {}       # 게이지 종류 -> (PhotoImage, scale)  (GC 방지를 겸한 캐시)
         self.character_images = {}   # (색상 슬롯, 높이) -> PhotoImage
+        self.trap_images = {}        # (함정 종류, 크기) -> PhotoImage
         self.gauge_name = None
         gw = GAUGE_TARGET_W
         self.gauge_canvas = tk.Canvas(side, highlightthickness=0, width=gw,
@@ -597,6 +599,12 @@ class GameFrame(ttk.Frame):
                                   drift_connections=drift_connections,
                                   start_direction=start_direction)
         self._render()
+        if choice == "드리프트":
+            messagebox.showinfo(
+                "드리프트 방향 설정",
+                "드리프트 타일과 연결할 인접한 변을 클릭하세요.\n"
+                "다른 변을 선택하면 드리프트 방향이 변경됩니다.",
+                parent=self.winfo_toplevel())
 
     def _replace_editor_tiles(self, coords):
         if not self.editor_map:
@@ -1283,6 +1291,28 @@ class GameFrame(ttk.Frame):
             self.character_images[key] = photo
         return self.character_images[key]
 
+    def _trap_image(self, trap_type, size):
+        key = (trap_type, size)
+        if key not in self.trap_images:
+            filename = TRAP_IMAGE_FILES.get(trap_type)
+            if filename is None:
+                return None
+            path = os.path.join(IMAGES_DIR, filename)
+            try:
+                try:
+                    from PIL import Image, ImageTk
+                    image = Image.open(path).convert("RGBA")
+                    image.thumbnail((size, size), Image.LANCZOS)
+                    photo = ImageTk.PhotoImage(image, master=self)
+                except ImportError:
+                    source = tk.PhotoImage(file=path, master=self)
+                    divisor = max(1, math.ceil(max(source.width(), source.height()) / size))
+                    photo = source.subsample(divisor)
+            except (OSError, tk.TclError):
+                photo = None
+            self.trap_images[key] = photo
+        return self.trap_images[key]
+
     def _draw_gauge(self, s):
         """기어 게이지 배경 위에 내 플레이어의 ▲ 마커를 해당 기어 숫자 아래에 겹쳐 그린다."""
         name = "up" if s.get("max_gear", BASIC_MAX_GEAR) > BASIC_MAX_GEAR else "basic"
@@ -1414,6 +1444,19 @@ class GameFrame(ttk.Frame):
                 c.create_text(x0 + size / 2, y0 + size - 6, text=txt, anchor="s", fill=text_color,
                               width=size - 8, justify="center",
                               font=("", 10 if self.edit_mode else max(7, size // 10), "bold"))
+        traps_by_cell = {}
+        for trap in s.get("traps", []):
+            if 0 <= trap.get("cell", -1) < len(cells) and trap.get("type") in TRAP_IMAGE_FILES:
+                traps_by_cell.setdefault(trap["cell"], set()).add(trap["type"])
+        for cell, trap_types in traps_by_cell.items():
+            cx, cy = center(cell)
+            trap_size = max(16, round(size * 0.36))
+            for index, trap_type in enumerate(sorted(trap_types)):
+                photo = self._trap_image(trap_type, trap_size)
+                if photo:
+                    offset = (index - (len(trap_types) - 1) / 2) * trap_size * 0.7
+                    c.create_image(cx + offset, cy, image=photo, anchor="center",
+                                   tags=("tile-trap",))
         coord_set = {tuple(coord) for coord in cells}
         if "connections" in m:
             connections = {tuple(sorted((tuple(first), tuple(second))))

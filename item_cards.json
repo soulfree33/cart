@@ -1,0 +1,198 @@
+{
+  "cards": [
+    {
+      "id": 1,
+      "count": 3,
+      "name": "구름",
+      "image": "images/item_card_01.png",
+      "description": "플레이어 한 명을 선택합니다. 선택된 플레이어는 다음 기본 이동에서 주사위 눈 3을 1로 처리합니다.",
+      "effect": {
+        "type": "transform_dice_result",
+        "target": "selected_player",
+        "trigger": "next_basic_move",
+        "from": 3,
+        "to": 1
+      }
+    },
+    {
+      "id": 2,
+      "count": 3,
+      "name": "슈퍼미사일",
+      "image": "images/item_card_02.png",
+      "description": "1위 플레이어의 기어를 2단 낮춥니다.",
+      "effect": {
+        "type": "change_gear",
+        "target": "first_place_player",
+        "amount": -2
+      }
+    },
+    {
+      "id": 3,
+      "count": 5,
+      "name": "부스터",
+      "image": "images/item_card_03.png",
+      "description": "내 기어를 2단 올립니다.",
+      "effect": {
+        "type": "change_gear",
+        "target": "self",
+        "amount": 2
+      }
+    },
+    {
+      "id": 4,
+      "count": 5,
+      "name": "실드",
+      "image": "images/item_card_04.png",
+      "description": "공격, 함정, 효과 중 하나를 한 번 무효화합니다.",
+      "effect": {
+        "type": "block_effects",
+        "target": "self",
+        "blocks": ["attack", "trap", "effect"],
+        "uses": 1,
+        "duration": "until_used"
+      }
+    },
+    {
+      "id": 5,
+      "count": 3,
+      "name": "지뢰",
+      "image": "images/item_card_05.png",
+      "description": "현재 내 게임 말이 있는 타일에 설치합니다. 지뢰가 설치된 타일에 도착한 말은 뒤로 3칸 이동합니다.",
+      "effect": {
+        "type": "place_trap",
+        "trap": "mine",
+        "tile": "current_tile",
+        "trigger": "player_lands",
+        "movement": -3
+      }
+    },
+    {
+      "id": 6,
+      "count": 1,
+      "name": "천사",
+      "image": "images/item_card_06.png",
+      "description": "다음 내 차례가 올 때까지 함정과 모든 공격 효과를 무효화합니다.",
+      "effect": {
+        "type": "block_effects",
+        "target": "self",
+        "blocks": ["trap", "attack"],
+        "duration": "until_own_next_turn"
+      }
+    },
+    {
+      "id": 7,
+      "count": 2,
+      "name": "대마왕",
+      "image": "images/item_card_07.png",
+      "description": "모든 플레이어는 다음 이동에서 기어와 관계없이 주사위를 1개만 굴립니다.",
+      "effect": {
+        "type": "set_dice_count",
+        "target": "all_players",
+        "trigger": "next_move",
+        "count": 1,
+        "ignore_gear": true
+      }
+    },
+    {
+      "id": 8,
+      "count": 6,
+      "name": "미사일",
+      "image": "images/item_card_08.png",
+      "description": "내 앞에 있는 플레이어 한 명을 선택해 기어를 2단 낮춥니다.",
+      "effect": {
+        "type": "change_gear",
+        "target": "selected_player_ahead",
+        "amount": -2
+      }
+    },
+    {
+      "id": 9,
+      "count": 3,
+      "name": "물폭탄",
+      "image": "images/item_card_09.png",
+      "description": "내 게임 말에서 4번째 또는 5번째 앞 타일에 있는 모든 플레이어의 기어를 3단 낮춥니다.",
+      "effect": {
+        "type": "change_gear",
+        "target": "players_on_relative_tiles",
+        "tile_offsets_ahead": [4, 5],
+        "amount": -3
+      }
+    },
+    {
+      "id": 10,
+      "count": 3,
+      "name": "우주선",
+      "image": "images/item_card_10.png",
+      "description": "1위 플레이어는 다음 기본 이동에서 주사위를 1개 적게 굴립니다.",
+      "effect": {
+        "type": "change_dice_count",
+        "target": "first_place_player",
+        "trigger": "next_basic_move",
+        "amount": -1
+      }
+    },
+    {
+      "id": 11,
+      "count": 4,
+      "name": "자석",
+      "image": "images/item_card_11.png",
+      "description": "내 앞에 있는 플레이어 한 명을 선택합니다. 주사위 한 개의 눈만큼 선택한 플레이어는 뒤로, 나는 앞으로 이동합니다.",
+      "effect": {
+        "type": "exchange_movement",
+        "target": "selected_player_ahead",
+        "dice_count": 1,
+        "selected_player_movement": "backward_by_roll",
+        "self_movement": "forward_by_roll"
+      }
+    },
+    {
+      "id": 12,
+      "count": 4,
+      "name": "물파리",
+      "image": "images/item_card_12.png",
+      "description": "내 바로 앞 플레이어의 기어를 2단 낮춥니다.",
+      "effect": {
+        "type": "change_gear",
+        "target": "player_immediately_ahead",
+        "amount": -2
+      }
+    },
+    {
+      "id": 14,
+      "count": 2,
+      "name": "슈퍼부스터",
+      "image": "images/item_card_14.png",
+      "description": "주사위 2개를 굴리고 나온 눈의 합만큼 이동합니다.",
+      "effect": {
+        "type": "move_by_dice_sum",
+        "dice_count": 2
+      }
+    },
+    {
+      "id": 16,
+      "count": 3,
+      "name": "바나나",
+      "image": "images/item_card_16.png",
+      "description": "현재 내 게임 말이 있는 타일에 설치합니다. 바나나가 설치된 타일에 도착한 말은 기어를 3단 낮춥니다.",
+      "effect": {
+        "type": "place_trap",
+        "trap": "banana",
+        "tile": "current_tile",
+        "trigger": "player_lands",
+        "gear_change": -3
+      }
+    },
+    {
+      "id": 17,
+      "count": 3,
+      "name": "벼락",
+      "image": "images/item_card_17.png",
+      "description": "내 게임 말보다 앞서 있는 모든 플레이어의 기어를 2단 낮춥니다.",
+      "effect": {
+        "type": "change_gear",
+        "target": "all_players_ahead",
+        "amount": -2
+      }
+    }
+  ]
+}

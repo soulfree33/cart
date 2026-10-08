@@ -1,0 +1,217 @@
+{
+  "cards": [
+    {
+      "id": 1,
+      "count": 1,
+      "name": "레드마트 카트",
+      "image": "images/shop_card_01.png",
+      "cost_luci": 3,
+      "description": "아이템 카드를 1장 더 가질 수 있습니다.",
+      "effect": {
+        "type": "increase_item_capacity",
+        "target": "self",
+        "amount": 1
+      }
+    },
+    {
+      "id": 2,
+      "count": 2,
+      "name": "몬스터",
+      "image": "images/shop_card_02.png",
+      "cost_luci": 6,
+      "description": "보유 중 맵 타일의 후진 및 기어 감소 효과를 무시합니다.",
+      "effect": {
+        "type": "ignore_map_effects",
+        "target": "self",
+        "effects": ["move_backward", "gear_decrease"],
+        "duration": "while_held"
+      }
+    },
+    {
+      "id": 3,
+      "count": 2,
+      "name": "저스티스",
+      "image": "images/shop_card_03.png",
+      "cost_luci": 4,
+      "description": "물폭탄이나 물파리 공격의 효과를 받은 뒤 앞으로 2칸 이동합니다.",
+      "effect": {
+        "type": "move_after_item_attack",
+        "target": "self",
+        "item_ids": [9, 12],
+        "timing": "after_attack_effect",
+        "amount": 2
+      }
+    },
+    {
+      "id": 4,
+      "count": 1,
+      "name": "세티",
+      "image": "images/shop_card_04.png",
+      "cost_luci": 4,
+      "description": "보유 중 부스터를 사용할 때 슈퍼부스터 효과로 사용할지 선택할 수 있습니다.",
+      "effect": {
+        "type": "choose_item_effect_upgrade",
+        "target": "self",
+        "item_id": 3,
+        "upgraded_item_id": 14,
+        "prompt": true,
+        "duration": "while_held"
+      }
+    },
+    {
+      "id": 5,
+      "count": 1,
+      "name": "그랜드 피아노",
+      "image": "images/shop_card_05.png",
+      "cost_luci": 3,
+      "description": "자석 공격에 성공하면 모든 플레이어에게 즉시 대마왕 효과를 적용합니다.",
+      "effect": {
+        "type": "use_item_after_success",
+        "target": "all_players",
+        "trigger_item_id": 11,
+        "item_id": 7,
+        "duration": "while_held"
+      }
+    },
+    {
+      "id": 6,
+      "count": 2,
+      "name": "렉키",
+      "image": "images/shop_card_06.png",
+      "cost_luci": 7,
+      "description": "보유 중 기본 이동 후 1칸 적게 이동할지 선택할 수 있습니다.",
+      "effect": {
+        "type": "optional_move_adjustment",
+        "target": "self",
+        "trigger": "after_basic_move",
+        "prompt": true,
+        "amount": -1,
+        "duration": "while_held"
+      }
+    },
+    {
+      "id": 7,
+      "count": 2,
+      "name": "이걸루",
+      "image": "images/shop_card_07.png",
+      "cost_luci": 4,
+      "description": "내가 사용한 물폭탄이나 물파리 공격을 받은 플레이어는 기어를 2단 더 낮춥니다.",
+      "effect": {
+        "type": "additional_gear_loss_on_item_attack",
+        "target": "attacked_player",
+        "item_ids": [9, 12],
+        "amount": -2,
+        "duration": "while_held"
+      }
+    },
+    {
+      "id": 8,
+      "count": 2,
+      "name": "아이스 코튼",
+      "image": "images/shop_card_08.png",
+      "cost_luci": 5,
+      "description": "구매 시 기어를 최소 5단으로 올립니다. 보유 중 기어는 5단 아래로 내려가지 않습니다.",
+      "effect": {
+        "type": "gear_floor",
+        "target": "self",
+        "minimum": 5,
+        "on_purchase": true,
+        "duration": "while_held"
+      }
+    },
+    {
+      "id": 9,
+      "count": 2,
+      "name": "흑기사",
+      "image": "images/shop_card_09.png",
+      "cost_luci": 10,
+      "description": "기본 이동 시 주사위 눈의 합보다 1칸 더 이동합니다.",
+      "effect": {
+        "type": "bonus_basic_move",
+        "target": "self",
+        "amount": 1,
+        "duration": "while_held"
+      }
+    },
+    {
+      "id": 10,
+      "count": 2,
+      "name": "세이버 헬파이어",
+      "image": "images/shop_card_10.png",
+      "cost_luci": 5,
+      "description": "미사일 공격 시 최대 두 명을 선택할 수 있습니다. 공격에 성공한 대상 수만큼 앞으로 이동합니다.",
+      "effect": {
+        "type": "multi_target_item_attack",
+        "target": "self",
+        "item_id": 8,
+        "minimum_targets": 1,
+        "maximum_targets": 2,
+        "confirm_required": true,
+        "move_forward_per_success": 1,
+        "duration": "while_held"
+      }
+    },
+    {
+      "id": 11,
+      "count": 2,
+      "name": "브루터스",
+      "image": "images/shop_card_11.png",
+      "cost_luci": 5,
+      "description": "미사일이나 슈퍼미사일 공격으로 감소하는 기어를 1단 줄입니다.",
+      "effect": {
+        "type": "reduce_gear_loss_from_item_attack",
+        "target": "self",
+        "item_ids": [2, 8],
+        "amount": 1,
+        "duration": "while_held"
+      }
+    },
+    {
+      "id": 12,
+      "count": 2,
+      "name": "백기사",
+      "image": "images/shop_card_12.png",
+      "cost_luci": 8,
+      "description": "기본 이동에서 주사위를 굴린 뒤 다시 굴릴지 선택할 수 있습니다. 다시 굴린다면 기존 주사위 중 하나를 선택해 다시 굴립니다.",
+      "effect": {
+        "type": "optional_reroll_one_die",
+        "target": "self",
+        "trigger": "after_basic_roll",
+        "prompt_before_reroll": true,
+        "select_existing_die": true,
+        "reroll_count": 1,
+        "duration": "while_held"
+      }
+    },
+    {
+      "id": 13,
+      "count": 2,
+      "name": "쉐퍼",
+      "image": "images/shop_card_13.png",
+      "cost_luci": 10,
+      "description": "기어를 올리는 맵 효과가 발동하면 기어 상승량이 2배가 됩니다.",
+      "effect": {
+        "type": "multiply_gear_increase",
+        "target": "self",
+        "trigger": "positive_gear_map_effect",
+        "multiplier": 2,
+        "duration": "while_held"
+      }
+    },
+    {
+      "id": 14,
+      "count": 2,
+      "name": "갤럭시 루나",
+      "image": "images/shop_card_14.png",
+      "cost_luci": 4,
+      "description": "내가 미사일로 공격한 플레이어는 기어를 1단 더 낮춥니다.",
+      "effect": {
+        "type": "additional_gear_loss_on_item_attack",
+        "target": "attacked_player",
+        "item_ids": [8],
+        "amount": -1,
+        "duration": "while_held"
+      }
+    }
+  ]
+}

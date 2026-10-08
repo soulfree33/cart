@@ -1,8 +1,14 @@
 """네트워크와 무관한 게임 규칙."""
+import json
 import random
+from pathlib import Path
 
-from mapdata import (AMOUNT_KINDS, DEFAULT_START_DIRECTION_ORDER, ITEM_CARD_COUNT,
-                     GameMap, effect_kind, effect_range, effect_title)
+from mapdata import (AMOUNT_KINDS, DEFAULT_START_DIRECTION_ORDER, GameMap,
+                     effect_kind, effect_range, effect_title)
+
+with Path(__file__).with_name("item_cards.json").open(encoding="utf-8") as card_file:
+    ITEM_CARDS = json.load(card_file)["cards"]
+ITEM_CARD_COUNTS = {card["id"]: card["count"] for card in ITEM_CARDS}
 
 MAX_PLAYERS = 4
 MIN_PLAYERS = 2
@@ -65,6 +71,8 @@ class Game:
         self.roll_seq = 0         # 굴린 횟수 (클라이언트가 새 굴림을 구분하는 용도)
         self.start_seq = 0        # 게임 시작 횟수 (선 정하기 연출 구분용)
         self.start_rolls = None   # 선 정하기 라운드 목록: [[{pid, value}, ...], ...]
+        self.item_deck = []
+        self.traps = []
         self.winner = None
         self.set_map(game_map)
         self.set_laps(laps)
@@ -83,6 +91,18 @@ class Game:
         if not isinstance(laps, int) or not (1 <= laps <= MAX_LAPS):
             raise GameError(f"바퀴 수는 1~{MAX_LAPS} 범위여야 합니다.")
         self.laps = laps
+
+    def place_trap(self, pid, trap_type):
+        if self.phase != "playing":
+            raise GameError("게임 중에만 함정을 설치할 수 있습니다.")
+        if trap_type not in ("mine", "banana"):
+            raise GameError("지원하지 않는 함정입니다.")
+        player = self.get(pid)
+        if player is None:
+            raise GameError("플레이어를 찾을 수 없습니다.")
+        trap = {"cell": player.cell, "type": trap_type}
+        self.traps.append(trap)
+        return dict(trap)
 
     @property
     def goal(self):
@@ -144,6 +164,9 @@ class Game:
             raise GameError("이미 게임이 진행 중입니다.")
         if len(self.players) < MIN_PLAYERS:
             raise GameError(f"최소 {MIN_PLAYERS}명이 필요합니다.")
+        self.item_deck = self._new_item_deck()
+        random.shuffle(self.item_deck)
+        self.traps = []
         for p in self.players:
             p.progress = 0
             p.cell = 0
@@ -183,6 +206,29 @@ class Game:
         logs.append(f"{self.get(self.turn).name} 님이 선공입니다.")
         return logs
 
+    @staticmethod
+    def _new_item_deck(pool=None):
+        allowed = set(pool) if pool is not None else None
+        return [card_id for card_id, count in ITEM_CARD_COUNTS.items()
+                if allowed is None or card_id in allowed
+                for _ in range(count)]
+
+    def _draw_item_card(self, pool=None):
+        allowed = set(pool) if pool is not None else None
+        available = [card for card in self.item_deck
+                     if allowed is None or card in allowed]
+        if not available:
+            refill = self._new_item_deck(pool)
+            if not refill:
+                raise GameError("아이템 박스 풀에 정의된 카드가 없습니다.")
+            random.shuffle(refill)
+            self.item_deck.extend(refill)
+            available = [card for card in self.item_deck
+                         if allowed is None or card in allowed]
+        card = random.choice(available)
+        self.item_deck.remove(card)
+        return card
+
     def reset(self):
         self.players = [p for p in self.players if p.connected]
         for p in self.players:
@@ -204,6 +250,8 @@ class Game:
         self.last_move_path = []
         self.last_effect_events = []
         self.start_rolls = None
+        self.item_deck = []
+        self.traps = []
 
     def _advance_turn(self):
         ids = [p.id for p in self.players]
@@ -464,7 +512,7 @@ class Game:
                 logs.append(f"{p.name}가 드리프트 성공!")
                 notice = "드리프트 성공!"
             elif kind == "item_box":
-                card = random.choice(e.get("pool") or range(1, ITEM_CARD_COUNT + 1))
+                card = self._draw_item_card(e.get("pool"))
                 p.items.append(card)
                 logs.append(f"[{title}] {p.name} 님이 아이템 카드 {card}번을 얻었습니다.")
                 notice = f"아이템 카드 {card}번 획득"
@@ -500,6 +548,7 @@ class Game:
             "start_seq": self.start_seq,
             "start_rolls": self.start_rolls,
             "effect_events": list(self.last_effect_events),
+            "traps": [dict(trap) for trap in self.traps],
             "players": [{
                 "id": p.id, "slot": p.slot, "name": p.name,
                 "connected": p.connected,
