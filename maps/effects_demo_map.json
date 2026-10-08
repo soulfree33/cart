@@ -1,0 +1,30 @@
+{
+  "name": "효과 데모 맵 (18칸)",
+  "width": 6,
+  "height": 5,
+  "path": [
+    [0, 0], [1, 0], [2, 0], [3, 0], [4, 0], [5, 0],
+    [5, 1], [5, 2], [5, 3], [5, 4],
+    [4, 4], [3, 4], [2, 4], [1, 4], [0, 4],
+    [0, 3], [0, 2], [0, 1]
+  ],
+  "effects": [
+    { "cell": 1,  "type": "gear", "amount": 1 },
+    { "cell": 2,  "type": "gear", "amount": 2 },
+    { "cell": 3,  "type": "n2o", "amount": 1 },
+    { "cell": 4,  "type": "n2o", "amount": 2 },
+    { "cell": 5,  "type": "collision" },
+    { "cell": 6,  "type": "luci", "amount": 1 },
+    { "cell": 7,  "type": "luci", "amount": 2 },
+    { "cell": 8,  "type": "luci", "amount": 3 },
+    { "cell": 9,  "type": "luci", "amount": 4 },
+    { "cell": 10, "type": "luci", "amount": 5 },
+    { "cell": 11, "type": "booster" },
+    { "cell": 12, "type": "item_box" },
+    { "cell": 13, "type": "fall" },
+    { "cell": 14, "type": "shop" },
+    { "cell": 15, "type": "drift", "to": 2 },
+    { "cell": 16, "type": "big_collision" },
+    { "cell": 17, "type": "back" }
+  ]
+}
