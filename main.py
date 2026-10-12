@@ -9,11 +9,14 @@ import sys
 from mapdata import DEFAULT_MAP_PATH, GameMap
 from protocol import DEFAULT_PORT
 
+DEBUG_MODE = True
+
 
 def run_server_cli(args):
     from server import GameServer
 
-    server = GameServer("0.0.0.0", args.port, GameMap.load(args.map), args.laps, auto_start=True)
+    server = GameServer("0.0.0.0", args.port, GameMap.load(args.map), args.laps,
+                        auto_start=True, debug_mode=DEBUG_MODE)
     server.start()
     print(f"서버 시작: 포트 {args.port}, 맵 '{server.game.map.name}', {args.laps}바퀴")
     print("4명이 모이면 자동 시작합니다. 명령: start(바로 시작) / reset / quit")
@@ -46,7 +49,7 @@ def main():
         run_server_cli(args)
     else:
         import gui
-        gui.run()
+        gui.run(debug_mode=DEBUG_MODE)
 
 
 if __name__ == "__main__":

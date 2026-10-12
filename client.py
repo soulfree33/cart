@@ -40,6 +40,34 @@ class NetClient:
     def choose_branch(self, direction):
         self.send({"type": "branch", "direction": direction})
 
+    def use_item(self, card_id, target_pid=None, target_pids=None,
+                 use_super_booster=False):
+        self.send({
+            "type": "use_item", "card_id": card_id, "target_pid": target_pid,
+            "target_pids": target_pids,
+            "use_super_booster": use_super_booster,
+        })
+
+    def resolve_shop_card_choice(self, choice_id, action, die_index=None):
+        self.send({
+            "type": "shop_card_choice", "choice_id": choice_id,
+            "action": action, "die_index": die_index,
+        })
+
+    def purchase_shop(self, shop_token, card_id, upgrade_gauge):
+        self.send({
+            "type": "shop_purchase",
+            "shop_token": shop_token,
+            "card_id": card_id,
+            "upgrade_gauge": upgrade_gauge,
+        })
+
+    def close_shop(self, shop_token):
+        self.send({"type": "shop_close", "shop_token": shop_token})
+
+    def debug_teleport(self, cell):
+        self.send({"type": "debug_teleport", "cell": cell})
+
     def close(self):
         if self.sock:
             try:

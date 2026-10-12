@@ -9,10 +9,11 @@ from protocol import DEFAULT_PORT, LineReader, ProtocolError, encode
 
 class GameServer:
     def __init__(self, host="0.0.0.0", port=DEFAULT_PORT, game_map: GameMap = None,
-                 laps=3, auto_start=False):
+                 laps=3, auto_start=False, debug_mode=False):
         self.host = host
         self.port = port
         self.auto_start = auto_start      # 4명이 모이면 자동 시작
+        self.debug_mode = debug_mode
         self.lock = threading.RLock()
         self.game = Game(game_map or default_map(), laps)
         self.clients = {}                 # pid -> socket
@@ -132,6 +133,35 @@ class GameServer:
                             self._broadcast_state()
                         elif kind == "branch":
                             for line in self.game.choose_branch(pid, msg.get("direction")):
+                                self._broadcast_log(line)
+                            self._broadcast_state()
+                        elif kind == "use_item":
+                            for line in self.game.use_item(
+                                    pid, msg.get("card_id"), msg.get("target_pid"),
+                                    debug_mode=self.debug_mode,
+                                    target_pids=msg.get("target_pids"),
+                                    use_super_booster=msg.get("use_super_booster", False)):
+                                self._broadcast_log(line)
+                            self._broadcast_state()
+                        elif kind == "shop_card_choice":
+                            for line in self.game.resolve_shop_card_choice(
+                                    pid, msg.get("choice_id"), msg.get("action"),
+                                    msg.get("die_index")):
+                                self._broadcast_log(line)
+                            self._broadcast_state()
+                        elif kind == "shop_purchase":
+                            for line in self.game.purchase_shop(
+                                    pid, msg.get("shop_token"), msg.get("card_id"),
+                                    msg.get("upgrade_gauge")):
+                                self._broadcast_log(line)
+                            self._broadcast_state()
+                        elif kind == "shop_close":
+                            self.game.close_shop(pid, msg.get("shop_token"))
+                            self._broadcast_state()
+                        elif kind == "debug_teleport":
+                            if not self.debug_mode:
+                                raise GameError("디버그 모드에서만 사용할 수 있습니다.")
+                            for line in self.game.debug_teleport(pid, msg.get("cell")):
                                 self._broadcast_log(line)
                             self._broadcast_state()
                     except GameError as e:

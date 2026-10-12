@@ -8,9 +8,10 @@ from tkinter import filedialog, messagebox, ttk
 from tkinter import font as tkfont
 
 from client import NetClient
-from game import BASIC_MAX_GEAR, CHARACTER_NAMES, COLORS, MAX_LAPS, MAX_NAME_LENGTH, MAX_PLAYERS
+from game import (CHARACTER_NAMES, COLORS, ITEM_CARDS, MAX_LAPS,
+                  MAX_NAME_LENGTH, MAX_PLAYERS, SHOP_CARDS)
 from mapdata import (DEFAULT_MAP_PATH, MAPS_DIR, MAX_SIZE, GameMap, MapError,
-                     effect_kind, effect_label, effect_range)
+                     SHOP_CARD_COUNT, effect_kind, effect_label, effect_range)
 from protocol import DEFAULT_PORT
 from server import GameServer
 
@@ -27,6 +28,16 @@ CARD_PANEL_PADDING = 10
 CARD_GROUP_GAP = 54
 CARD_SLOT_GAP = 16
 CARD_PANEL_HEIGHT = CARD_SLOT_HEIGHT + CARD_SLOT_LABEL_HEIGHT + CARD_PANEL_PADDING * 2
+ITEM_CARD_DISPLAY_WIDTH = 300
+ITEM_CARD_DISPLAY_HEIGHT = round(ITEM_CARD_DISPLAY_WIDTH * 1000 / 680)
+SHOP_CARD_THUMB_HEIGHT = 84
+SHOP_CARD_PREVIEW_HEIGHT = 250
+ITEM_CARD_FLIGHT_MS = 800
+ITEM_CARD_FRAME_MS = 25
+ITEM_CARD_FLIGHT_FRAMES = ITEM_CARD_FLIGHT_MS // ITEM_CARD_FRAME_MS
+ITEM_CARD_HOLD_MS = 3000
+ITEM_CARDS_BY_ID = {card["id"]: card for card in ITEM_CARDS}
+SHOP_CARDS_BY_ID = {card["id"]: card for card in SHOP_CARDS}
 IMAGES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "images")
 
 # 기어 게이지 이미지 (원본 764x634 기준 좌표). numbers: 기어 1단, 2단, ... 숫자의 중심 좌표,
@@ -38,6 +49,13 @@ RIGHT_PANEL_BASE_WIDTH = GAUGE_TARGET_W
 PLAYER_ROWS = 4         # 플레이어 목록이 항상 확보하는 줄 수
 CHARACTER_FILES = ("bajji.png", "marid.png", "dijini.png", "dao.png")  # 빨강, 핑크, 노랑, 파랑
 TRAP_IMAGE_FILES = {"mine": "trap_ufo_disc.png", "banana": "trap_banana_peel.png"}
+STATUS_IMAGE_FILES = {
+    "cloud": "status_cloud.png",
+    "demon_king": "status_skull.png",
+    "ufo": "status_ufo.png",
+    "shield": "item_card_04.png",
+    "angel": "item_card_06.png",
+}
 CHARACTER_BUTTON_H = 58
 COLOR_MENU_BASE_H = 108
 MARKER_SIZE = 44        # ▲ 크기 (원본 기준 px)
@@ -211,7 +229,8 @@ class LauncherFrame(ttk.Frame):
             name = self.name.get().strip() or "플레이어"
             if self.mode.get() == "server":
                 game_map = GameMap.load(self.map_path.get())
-                server = GameServer("0.0.0.0", port, game_map, int(self.laps.get()))
+                server = GameServer("0.0.0.0", port, game_map, int(self.laps.get()),
+                                    debug_mode=self.app.debug_mode)
                 server.start()
                 host = "127.0.0.1"
             else:
@@ -230,6 +249,7 @@ class GameFrame(ttk.Frame):
     def __init__(self, app, client, server):
         super().__init__(app, padding=8)
         self.app, self.client, self.server = app, client, server
+        self.debug_mode = app.debug_mode
         self.pid = None
         self.state = None
         self.animating = False
@@ -246,6 +266,38 @@ class GameFrame(ttk.Frame):
         self.popup_text = ""
         self.popup_color = "#ffffff"
         self.popup_after = None
+        self.item_card_queue = []
+        self.item_animation_sources = {}
+        self.item_animation_uses_pillow = None
+        self.item_card_animation_id = None
+        self.item_card_animation_image = None
+        self.item_card_hold_after = None
+        self.item_card_hold_bind_id = None
+        self.item_card_hitboxes = []
+        self.hovered_item_index = None
+        self.item_popup = None
+        self.item_popup_image = None
+        self.item_popup_card_id = None
+        self.shop_effect_dialog = None
+        self.shop_effect_dialog_id = None
+        self.shop_queue = []
+        self.shop_popup = None
+        self.shop_popup_token = None
+        self.shop_available_cards = set()
+        self.shop_card_images = {}
+        self.shop_preview_image = None
+        self.shop_preview_label = None
+        self.shop_description_label = None
+        self.shop_card_buttons = {}
+        self.shop_selected_card_id = None
+        self.shop_upgrade_selected = False
+        self.shop_purchase_pending = False
+        self.shop_balance_label = None
+        self.shop_remaining_label = None
+        self.shop_upgrade_button = None
+        self.shop_buy_button = None
+        self.debug_teleport_armed = False
+        self.board_geometry = None
         self.victory_popup_key = None
         self.turn_popup_key = None
         self.last_popup_effect_seq = 0
@@ -281,6 +333,9 @@ class GameFrame(ttk.Frame):
                           height=CARD_PANEL_HEIGHT,
                           bg=BOARD_BACKGROUND, highlightthickness=0)
         self.card_slots_canvas.grid(row=1, column=0, sticky="ew")
+        self.card_slots_canvas.bind("<Motion>", self._on_card_slots_motion)
+        self.card_slots_canvas.bind("<Leave>", self._on_card_slots_leave)
+        self.card_slots_canvas.bind("<Button-1>", self._on_card_slots_click)
         self.panes.add(self.board_area, weight=1)
 
         self.right_panel = ttk.Frame(self.panes)
@@ -314,6 +369,8 @@ class GameFrame(ttk.Frame):
         self.gauge_images = {}       # 게이지 종류 -> (PhotoImage, scale)  (GC 방지를 겸한 캐시)
         self.character_images = {}   # (색상 슬롯, 높이) -> PhotoImage
         self.trap_images = {}        # (함정 종류, 크기) -> PhotoImage
+        self.status_images = {}      # (효과 이름, 크기) -> PhotoImage
+        self.item_card_images = {}   # (카드 번호, 크기) -> PhotoImage
         self.gauge_name = None
         gw = GAUGE_TARGET_W
         self.gauge_canvas = tk.Canvas(side, highlightthickness=0, width=gw,
@@ -391,7 +448,7 @@ class GameFrame(ttk.Frame):
         self.color_spacer.config(height=round(COLOR_MENU_BASE_H * k))
         self.dice_canvas.config(width=round(DICE_W * k), height=round(DICE_H * k))
         self.card_slots_canvas.config(height=round(CARD_PANEL_HEIGHT * k))
-        self._draw_card_slots()
+        self._draw_card_slots(self.state)
         w = round(GAUGE_TARGET_W * k)
         self.gauge_canvas.config(width=w, height=round(w * GAUGE_SRC_H / GAUGE_SRC_W))
         self.gauge_images.clear()            # 새 크기로 다시 불러온다
@@ -648,6 +705,8 @@ class GameFrame(ttk.Frame):
         self._render()
 
     def _on_editor_canvas_click(self, event):
+        if self._handle_debug_teleport_click(event):
+            return
         if not self.edit_mode or not self.editor_map or not self.editor_grid_geometry:
             return
         edge = self._editor_edge_at(event.x, event.y)
@@ -667,6 +726,48 @@ class GameFrame(ttk.Frame):
             return
         self.selected_editor_cell = len(self.editor_map.path)
         self._replace_editor_tiles([*self.editor_map.path, coord])
+
+    def _handle_debug_teleport_click(self, event):
+        if (not self.debug_mode or not self.state
+                or self.state.get("phase") != "playing" or self.edit_mode):
+            return False
+        if (self.animating or self.popup_active or self.popup_queue
+                or self.shop_popup or self.shop_queue):
+            return True
+        player = next((p for p in self.state["players"] if p["id"] == self.pid), None)
+        if not player or not self.board_geometry:
+            return False
+        cells, size, ox, oy = self.board_geometry
+        cell_x, cell_y = cells[player["cell"]]
+        token_x = ox + cell_x * size + size / 2
+        token_y = oy + cell_y * size + size / 2
+        token_x += (-1 if player["slot"] % 2 == 0 else 1) * size * 0.2
+        token_y += (-1 if player["slot"] < 2 else 1) * size * 0.2
+        hit_radius = max(14, size * 0.24)
+        if (event.x - token_x) ** 2 + (event.y - token_y) ** 2 <= hit_radius ** 2:
+            self.debug_teleport_armed = not self.debug_teleport_armed
+            if self.debug_teleport_armed:
+                self._log("! 내 말을 선택했습니다. 이동할 맵 타일을 클릭하세요.")
+            else:
+                self._log("! 디버그 이동 선택을 취소했습니다.")
+            self._render()
+            return True
+        if not self.debug_teleport_armed:
+            return False
+
+        cell_id = next((index for index, (x, y) in enumerate(cells)
+                        if ox + x * size <= event.x < ox + (x + 1) * size
+                        and oy + y * size <= event.y < oy + (y + 1) * size), None)
+        if cell_id is None:
+            return True
+        try:
+            self.client.debug_teleport(cell_id)
+        except OSError as error:
+            self._log(f"! 디버그 이동 요청 오류: {error}")
+            return True
+        self.debug_teleport_armed = False
+        self._render()
+        return True
 
     def _editor_edge_at(self, x, y):
         if not self.edit_mode or not self.editor_map or not self.editor_grid_geometry:
@@ -813,7 +914,8 @@ class GameFrame(ttk.Frame):
             pass
 
     def _show_branch_prompt(self, s):
-        if self.popup_active or self.popup_queue:
+        if (self.popup_active or self.popup_queue or self.shop_popup
+                or s.get("pending_shop_choice")):
             return
         request = s.get("branch_request")
         if not request or request["pid"] != self.pid:
@@ -867,6 +969,9 @@ class GameFrame(ttk.Frame):
                 self.pending_logs.append(msg["text"])
             elif kind == "error":
                 self._log("! " + msg["text"])
+                if self.shop_popup:
+                    self.shop_purchase_pending = False
+                    self._refresh_shop_popup()
                 if self.state:
                     self._render()       # 버튼 상태 복구
             elif kind == "closed":
@@ -877,6 +982,22 @@ class GameFrame(ttk.Frame):
 
     def _apply_state(self, s):
         self.state = s
+        if self.shop_popup_token is not None:
+            player = next((p for p in s["players"] if p["id"] == self.pid), None)
+            active_tokens = {visit["token"] for visit in player.get("shop_visits", [])} if player else set()
+            if self.shop_popup_token not in active_tokens:
+                self._close_shop_popup(send_close=False, resume=False)
+            else:
+                self.shop_purchase_pending = False
+                self._refresh_shop_popup()
+        if (self.shop_effect_dialog and self.shop_effect_dialog.winfo_exists()
+                and (not s.get("pending_shop_choice")
+                     or s["pending_shop_choice"]["id"] != self.shop_effect_dialog_id)):
+            self.shop_effect_dialog.destroy()
+            self.shop_effect_dialog = None
+            self.shop_effect_dialog_id = None
+        if self.item_popup and not self._can_select_item_card():
+            self._close_item_card_popup(self.item_popup, resume=False)
         self._last_override = {}
         self.shown_seq = s["roll_seq"]
         self.shown_move_seq = s.get("move_seq", self.shown_move_seq)
@@ -885,9 +1006,144 @@ class GameFrame(ttk.Frame):
         for line in self.pending_logs:
             self._log(line)
         self.pending_logs.clear()
+        self._draw_card_slots(s)
         self._render()
-        self._show_next_popup()
-        self._show_branch_prompt(s)
+        if self.item_card_queue:
+            self.animating = True
+            self._show_next_item_card_animation()
+        else:
+            self._show_next_popup()
+            self._show_branch_prompt(s)
+
+    def _item_animation_source(self, card_id):
+        if card_id not in self.item_animation_sources:
+            if self.item_animation_uses_pillow is None:
+                try:
+                    from PIL import Image
+                    self.item_animation_uses_pillow = True
+                except ImportError:
+                    self.item_animation_uses_pillow = False
+            front_path = os.path.join(IMAGES_DIR, f"item_card_{card_id:02d}.png")
+            back_path = os.path.join(IMAGES_DIR, "item_card_back.png")
+            try:
+                if self.item_animation_uses_pillow:
+                    from PIL import Image
+                    with Image.open(front_path) as front_file:
+                        front = front_file.convert("RGBA")
+                    with Image.open(back_path) as back_file:
+                        back = back_file.convert("RGBA")
+                else:
+                    front = tk.PhotoImage(file=front_path, master=self)
+                    back = tk.PhotoImage(file=back_path, master=self)
+                self.item_animation_sources[card_id] = (front, back)
+            except (OSError, tk.TclError) as error:
+                self._log(f"! 아이템 카드 애니메이션 이미지를 불러오지 못했습니다: {error}")
+                self.item_animation_sources[card_id] = None
+        return self.item_animation_sources[card_id]
+
+    def _item_card_frame_image(self, source, card_height, progress, angle):
+        cosine = math.cos(angle)
+        face = source[0] if cosine >= 0 else source[1]
+        scale = 0.2 + 0.8 * progress
+        width_factor = max(0.035, abs(cosine))
+        if self.item_animation_uses_pillow:
+            from PIL import Image, ImageTk
+            width = max(1, round(source[0].width * card_height / source[0].height
+                                 * scale * width_factor))
+            height = max(1, round(card_height * scale))
+            frame = face.resize((width, height), Image.LANCZOS)
+            return ImageTk.PhotoImage(frame, master=self)
+        width = max(1, round(source[0].width() * card_height / source[0].height()
+                             * scale * width_factor))
+        height = max(1, round(card_height * scale))
+        divisor_x = max(1, math.ceil(face.width() / width))
+        divisor_y = max(1, math.ceil(face.height() / height))
+        return face.subsample(divisor_x, divisor_y)
+
+    def _item_card_source_center(self, state, cell):
+        map_data = state["map"]
+        path = map_data["path"]
+        cells = map_data.get("cells") or path + map_data.get("branch_cells", [])
+        if not isinstance(cell, int) or not (0 <= cell < len(cells)):
+            return self.canvas.winfo_width() / 2, self.canvas.winfo_height() / 2
+        canvas_width = self.canvas.winfo_width()
+        canvas_height = self.canvas.winfo_height()
+        if canvas_width < 2:
+            canvas_width = CANVAS
+        if canvas_height < 2:
+            canvas_height = CANVAS
+        size = int(min(110 * min(canvas_width, canvas_height) / CANVAS,
+                       (min(canvas_width, canvas_height) - 20)
+                       // max(map_data["width"], map_data["height"])))
+        ox = (canvas_width - size * map_data["width"]) // 2
+        oy = (canvas_height - size * map_data["height"]) // 2
+        x, y = cells[cell]
+        return ox + x * size + size / 2, oy + y * size + size / 2
+
+    def _show_next_item_card_animation(self):
+        if not self.item_card_queue:
+            self.animating = False
+            self._show_next_popup()
+            if not self.popup_active and not self.popup_queue and self.state:
+                self._show_branch_prompt(self.state)
+            return
+        event, state = self.item_card_queue.pop(0)
+        card_id = event.get("card_id")
+        source = self._item_animation_source(card_id)
+        if source is None:
+            self.after_idle(self._show_next_item_card_animation)
+            return
+        start = self._item_card_source_center(state, event.get("cell"))
+        width = self.canvas.winfo_width() if self.canvas.winfo_width() > 1 else CANVAS
+        height = self.canvas.winfo_height() if self.canvas.winfo_height() > 1 else CANVAS
+        target = (width / 2, height / 2)
+        source_width = source[0].width if self.item_animation_uses_pillow else source[0].width()
+        source_height = source[0].height if self.item_animation_uses_pillow else source[0].height()
+        card_height = round(source_height * ITEM_CARD_DISPLAY_WIDTH / source_width)
+        self.canvas.delete("item-card-animation")
+        self.item_card_animation_id = self.canvas.create_image(
+            *start, anchor="center", tags=("item-card-animation",))
+        self._animate_item_card(source, start, target, card_height, 0)
+
+    def _animate_item_card(self, source, start, target, card_height, frame):
+        progress = min(1.0, frame / ITEM_CARD_FLIGHT_FRAMES)
+        eased = progress * progress * (3 - 2 * progress)
+        angle = progress * math.tau * 2
+        image = self._item_card_frame_image(source, card_height, progress, angle)
+        self.item_card_animation_image = image
+        x = start[0] + (target[0] - start[0]) * eased
+        y = start[1] + (target[1] - start[1]) * eased
+        if not self.canvas.type(self.item_card_animation_id):
+            self.item_card_animation_id = self.canvas.create_image(
+                x, y, image=image, anchor="center", tags=("item-card-animation",))
+        else:
+            self.canvas.coords(self.item_card_animation_id, x, y)
+            self.canvas.itemconfigure(self.item_card_animation_id, image=image)
+        self.canvas.tag_raise("item-card-animation")
+        if frame < ITEM_CARD_FLIGHT_FRAMES:
+            self.after(ITEM_CARD_FRAME_MS, self._animate_item_card,
+                       source, start, target, card_height, frame + 1)
+        else:
+            self.item_card_hold_bind_id = self.canvas.bind(
+                "<Button-1>", self._dismiss_item_card_animation, add="+")
+            self.item_card_hold_after = self.after(
+                ITEM_CARD_HOLD_MS, self._finish_item_card_animation)
+
+    def _dismiss_item_card_animation(self, _event):
+        if self.item_card_hold_after:
+            self.after_cancel(self.item_card_hold_after)
+            self.item_card_hold_after = None
+        self._finish_item_card_animation()
+
+    def _finish_item_card_animation(self):
+        self.item_card_hold_after = None
+        if self.item_card_hold_bind_id:
+            self.canvas.unbind("<Button-1>", self.item_card_hold_bind_id)
+            self.item_card_hold_bind_id = None
+        self.canvas.delete("item-card-animation")
+        self.item_card_animation_id = None
+        self.item_card_animation_image = None
+        self._show_next_item_card_animation()
 
     def _queue_state_popups(self, s):
         players = {p["id"]: p for p in s["players"]}
@@ -896,6 +1152,14 @@ class GameFrame(ttk.Frame):
             if sequence <= self.last_popup_effect_seq:
                 continue
             self.last_popup_effect_seq = sequence
+            if event.get("kind") == "item_card_drawn":
+                if event.get("pid") == self.pid:
+                    self.item_card_queue.append((event, s))
+                continue
+            if event.get("kind") == "shop_visit":
+                if event.get("pid") == self.pid:
+                    self.shop_queue.append(event)
+                continue
             player = players.get(event["pid"])
             if player:
                 name = "나" if player["id"] == self.pid else player["name"]
@@ -924,7 +1188,12 @@ class GameFrame(ttk.Frame):
             self.turn_popup_key = turn_key
 
     def _show_next_popup(self):
-        if self.popup_active or not self.popup_queue:
+        if self.popup_active:
+            return
+        if not self.popup_queue:
+            self._show_next_shop_popup()
+            if not self.shop_popup:
+                self._show_shop_card_choice()
             return
         popup = self.popup_queue.pop(0)
         text, color = popup[:2]
@@ -939,6 +1208,71 @@ class GameFrame(ttk.Frame):
             return
         self.popup_after = self.after(POPUP_HOLD_MS, self._fade_popup, 0)
 
+    def _show_shop_card_choice(self):
+        if (not self.state or self.animating or self.popup_active or self.popup_queue
+                or self.shop_popup or self.item_popup or self.branch_dialog):
+            return
+        choice = self.state.get("pending_shop_choice")
+        if not choice or choice.get("pid") != self.pid:
+            return
+        if (self.shop_effect_dialog and self.shop_effect_dialog.winfo_exists()
+                and self.shop_effect_dialog_id == choice["id"]):
+            self.shop_effect_dialog.lift()
+            return
+        dialog = tk.Toplevel(self)
+        self.shop_effect_dialog = dialog
+        self.shop_effect_dialog_id = choice["id"]
+        dialog.transient(self.winfo_toplevel())
+        dialog.resizable(False, False)
+        dialog.protocol("WM_DELETE_WINDOW", lambda: None)
+        if choice["kind"] == "optional_reroll_one_die":
+            dialog.title("백기사")
+            ttk.Label(dialog, text="다시 굴릴 주사위를 선택하세요.").pack(
+                padx=16, pady=(14, 8))
+            die_index = tk.IntVar(master=dialog, value=0)
+            for index, value in enumerate(choice["values"]):
+                ttk.Radiobutton(
+                    dialog, text=f"주사위 {index + 1}: {value}",
+                    variable=die_index, value=index).pack(anchor="w", padx=16)
+            buttons = ttk.Frame(dialog)
+            buttons.pack(anchor="e", padx=12, pady=12)
+            ttk.Button(
+                buttons, text="다시 굴리지 않기",
+                command=lambda: self._submit_shop_card_choice(
+                    dialog, choice["id"], "keep")).pack(side="right", padx=(6, 0))
+            ttk.Button(
+                buttons, text="선택한 주사위 다시 굴리기",
+                command=lambda: self._submit_shop_card_choice(
+                    dialog, choice["id"], "reroll", die_index.get())).pack(side="right")
+        elif choice["kind"] == "optional_move_adjustment":
+            dialog.title("렉키")
+            ttk.Label(dialog, text="기본 이동을 1칸 줄일까요?").pack(
+                padx=16, pady=(14, 8))
+            ttk.Label(dialog, text=f"예정 이동: {choice['total']}칸").pack(
+                padx=16, pady=(0, 8))
+            buttons = ttk.Frame(dialog)
+            buttons.pack(anchor="e", padx=12, pady=12)
+            ttk.Button(
+                buttons, text="그대로 이동",
+                command=lambda: self._submit_shop_card_choice(
+                    dialog, choice["id"], "normal")).pack(side="right", padx=(6, 0))
+            ttk.Button(
+                buttons, text="1칸 적게 이동",
+                command=lambda: self._submit_shop_card_choice(
+                    dialog, choice["id"], "less")).pack(side="right")
+        else:
+            dialog.destroy()
+            self.shop_effect_dialog = None
+            self.shop_effect_dialog_id = None
+            return
+        dialog.grab_set()
+
+    def _submit_shop_card_choice(self, dialog, choice_id, action, die_index=None):
+        try:
+            self.client.resolve_shop_card_choice(choice_id, action, die_index)
+        except OSError as error:
+            messagebox.showerror("상점 카드 효과 오류", str(error), parent=dialog)
+
     def _flash_victory_popup(self, phase):
         if phase >= VICTORY_FLASHES * 2:
             self.canvas.delete("popup")
@@ -949,6 +1283,7 @@ class GameFrame(ttk.Frame):
                 self._show_next_popup()
             else:
                 self._render()
+                self._show_next_popup()
                 if self.state:
                     self._show_branch_prompt(self.state)
             return
@@ -1021,6 +1356,7 @@ class GameFrame(ttk.Frame):
                 self._show_next_popup()
             else:
                 self._render()
+                self._show_next_popup()
                 if self.state:
                     self._show_branch_prompt(self.state)
             return
@@ -1211,7 +1547,9 @@ class GameFrame(ttk.Frame):
             self.dice_canvas.delete("all")
         mine = (s["phase"] == "playing" and s["turn"] == self.pid
             and s.get("branch_request") is None
-            and not self.popup_active and not self.popup_queue)
+            and s.get("pending_shop_choice") is None
+            and not self.popup_active and not self.popup_queue
+            and not self.shop_popup and not self.shop_queue)
         count = players[self.pid]["dice"] if self.pid in players else 0
         self.roll_btn.config(text=f"주사위 굴리기 ({count}개)" if mine else "주사위 굴리기",
                              state="normal" if mine else "disabled")
@@ -1261,10 +1599,9 @@ class GameFrame(ttk.Frame):
                 tk.Button(row, **options).pack(side="left", padx=2)
             return
 
-        completed_laps = min(player.get("laps_completed", 0), s["laps"])
         status_font = ("", -round(20 * self.k), "bold")
         ttk.Label(self.color_box,
-                  text=f"{completed_laps}/{s['laps']} Laps",
+                  text=f"{player['lap']}/{s['laps']} Laps",
                   font=status_font).pack(
                       anchor="w", pady=(6, 2))
         ttk.Label(self.color_box, text=f"루찌: {player['luci']}", font=status_font).pack(anchor="w")
@@ -1313,9 +1650,33 @@ class GameFrame(ttk.Frame):
             self.trap_images[key] = photo
         return self.trap_images[key]
 
+    def _status_effect_image(self, effect, size):
+        key = (effect, size)
+        if key not in self.status_images:
+            filename = STATUS_IMAGE_FILES.get(effect)
+            if filename is None:
+                return None
+            path = os.path.join(IMAGES_DIR, filename)
+            try:
+                try:
+                    from PIL import Image, ImageTk
+                    image = Image.open(path).convert("RGBA")
+                    image.thumbnail((size, size), Image.LANCZOS)
+                    photo = ImageTk.PhotoImage(image, master=self)
+                except ImportError:
+                    source = tk.PhotoImage(file=path, master=self)
+                    divisor = max(1, math.ceil(max(source.width(), source.height()) / size))
+                    photo = source.subsample(divisor)
+            except (OSError, tk.TclError) as error:
+                self._log(f"! 상태 효과 아이콘을 불러오지 못했습니다 ({filename}): {error}")
+                photo = None
+            self.status_images[key] = photo
+        return self.status_images[key]
+
     def _draw_gauge(self, s):
         """기어 게이지 배경 위에 내 플레이어의 ▲ 마커를 해당 기어 숫자 아래에 겹쳐 그린다."""
-        name = "up" if s.get("max_gear", BASIC_MAX_GEAR) > BASIC_MAX_GEAR else "basic"
+        player = next((p for p in s["players"] if p["id"] == self.pid), None)
+        name = "up" if player and player.get("gear_gauge_upgraded") else "basic"
         if name not in self.gauge_images:
             self.gauge_images[name] = _load_gauge_image(GAUGES[name]["file"], round(GAUGE_TARGET_W * self.k))
         photo, scale = self.gauge_images[name]
@@ -1329,7 +1690,6 @@ class GameFrame(ttk.Frame):
         if photo:
             c.create_image(0, 0, image=photo, anchor="nw")
         cx, cy = cfg["center"]
-        player = next((p for p in s["players"] if p["id"] == self.pid), None)
         if player:
             c.create_text(cx * scale, cy * scale, text=f"{player['gear']}단",
                           fill=COLORS[player["slot"]],
@@ -1356,7 +1716,50 @@ class GameFrame(ttk.Frame):
                 c.create_polygon(pts, fill=COLORS[p["slot"]], outline="#ffffff" if turn else "#101010",
                                  width=2 if turn else 1)
 
-    def _draw_card_slots(self):
+    def _item_card_image(self, card_id, size):
+        key = (card_id, size)
+        if key not in self.item_card_images:
+            path = os.path.join(IMAGES_DIR, f"item_card_{card_id:02d}.png")
+            try:
+                try:
+                    from PIL import Image, ImageTk
+                    with Image.open(path) as image_file:
+                        image = image_file.convert("RGBA")
+                    image = image.resize(
+                        (round(size * 680 / 1000), size), Image.LANCZOS)
+                    photo = ImageTk.PhotoImage(image, master=self)
+                except ImportError:
+                    source = tk.PhotoImage(file=path, master=self)
+                    divisor = max(1, round(source.height() / size))
+                    photo = source.subsample(divisor, divisor)
+                self.item_card_images[key] = photo
+            except (OSError, tk.TclError):
+                self.item_card_images[key] = None
+        return self.item_card_images[key]
+
+    def _shop_card_image(self, card_id, height):
+        key = (card_id, height)
+        if key not in self.shop_card_images:
+            path = os.path.join(IMAGES_DIR, f"shop_card_{card_id:02d}.png")
+            try:
+                try:
+                    from PIL import Image, ImageTk
+                    with Image.open(path) as image_file:
+                        image = image_file.convert("RGBA")
+                    image = image.resize(
+                        (round(height * 400 / 560), height), Image.LANCZOS)
+                    photo = ImageTk.PhotoImage(image, master=self)
+                except ImportError:
+                    source = tk.PhotoImage(file=path, master=self)
+                    divisor = max(1, round(source.height() / height))
+                    photo = source.subsample(divisor, divisor)
+                self.shop_card_images[key] = photo
+            except (OSError, tk.TclError) as error:
+                self._log(f"! 상점 카드 이미지를 불러오지 못했습니다: {error}")
+                self.shop_card_images[key] = None
+        return self.shop_card_images[key]
+
+    def _draw_card_slots(self, state=None):
         canvas = self.card_slots_canvas
         canvas.delete("all")
         width = canvas.winfo_width()
@@ -1366,7 +1769,8 @@ class GameFrame(ttk.Frame):
         card_height = round(CARD_SLOT_HEIGHT * scale)
         shop_width = round(card_height * 400 / 560)
         item_width = round(card_height * 680 / 1000)
-        item_group_width = item_width * 2 + round(CARD_SLOT_GAP * scale)
+        item_gap = round(CARD_SLOT_GAP * scale)
+        item_group_width = item_width * 3 + item_gap * 2
         group_gap = round(CARD_GROUP_GAP * scale)
         total_width = shop_width + group_gap + item_group_width
         start_x = (width - total_width) / 2
@@ -1374,19 +1778,510 @@ class GameFrame(ttk.Frame):
         card_y = round((CARD_PANEL_PADDING + CARD_SLOT_LABEL_HEIGHT) * scale)
         shop_x = start_x
         item_x = shop_x + shop_width + group_gap
+        player = next((p for p in (state or {}).get("players", [])
+                       if p["id"] == self.pid), None)
+        items = player["items"] if player else []
+        shop_cards = player.get("shop_cards", []) if player else []
         panel_font = self._font(10, True)
-        canvas.create_text(shop_x + shop_width / 2, label_y, text="상점 카드",
+        shop_label = f"상점 카드 ({len(shop_cards)})" if shop_cards else "상점 카드"
+        canvas.create_text(shop_x + shop_width / 2, label_y, text=shop_label,
                            fill="#ffffff", font=panel_font, tags=("card-slot-label",))
-        canvas.create_text(item_x + item_group_width / 2, label_y, text="아이템 카드",
+        capacity = player.get("item_capacity", 2) if player else 2
+        item_label = f"아이템 카드 ({len(items)}/{capacity})"
+        canvas.create_text(item_x + item_group_width / 2, label_y, text=item_label,
                            fill="#ffffff", font=panel_font, tags=("card-slot-label",))
-        slots = ((shop_x, shop_width), (item_x, item_width),
-                 (item_x + item_width + round(CARD_SLOT_GAP * scale), item_width))
+        item_slots = [(item_x + index * (item_width + item_gap), item_width)
+                      for index in range(3)]
+        slots = [(shop_x, shop_width)] + item_slots
         radius = round(12 * scale)
         for x, slot_width in slots:
             points = self._rounded_popup_points(x, card_y, x + slot_width,
                                                 card_y + card_height, radius)
             canvas.create_polygon(*points, fill="#ffffff", outline="#000000",
                                   width=max(2, round(3 * scale)), tags=("card-slot",))
+        if shop_cards:
+            image = self._shop_card_image(shop_cards[-1], card_height)
+            if image:
+                canvas.create_image(shop_x + shop_width / 2, card_y + card_height / 2,
+                                    image=image, anchor="center", tags=("shop-card",))
+        self.item_card_hitboxes = []
+        visible_items = items[-3:]
+        first_index = len(items) - len(visible_items)
+        for offset, (card_id, (x, slot_width)) in enumerate(zip(visible_items, item_slots)):
+            card_index = first_index + offset
+            hovered = card_index == self.hovered_item_index
+            image = self._item_card_image(card_id, card_height)
+            if image:
+                canvas.create_image(x + slot_width / 2, card_y + card_height / 2,
+                                    image=image, anchor="center", tags=("item-card",))
+            if hovered:
+                points = self._rounded_popup_points(x, card_y, x + slot_width,
+                                                    card_y + card_height, radius)
+                canvas.create_polygon(*points, fill="", outline="#00ffff",
+                                      width=max(5, round(6 * scale)),
+                                      tags=("item-card-hover",))
+            self.item_card_hitboxes.append(
+                (card_index, card_id, x, card_y, x + slot_width, card_y + card_height))
+
+    def _can_select_item_card(self):
+        return (self.state is not None
+                and self.state.get("phase") == "playing"
+                and (self.debug_mode or self.state.get("turn") == self.pid)
+                and self.state.get("pending_shop_choice") is None
+                and self.state.get("branch_request") is None
+                and not self.shop_popup and not self.shop_queue)
+
+    def _on_card_slots_motion(self, event):
+        hovered = (next((index for index, _, x1, y1, x2, y2 in self.item_card_hitboxes
+                         if x1 <= event.x <= x2 and y1 <= event.y <= y2), None)
+                   if self._can_select_item_card() else None)
+        if hovered != self.hovered_item_index:
+            self.hovered_item_index = hovered
+            self._draw_card_slots(self.state)
+
+    def _on_card_slots_leave(self, _event):
+        if self.hovered_item_index is not None:
+            self.hovered_item_index = None
+            self._draw_card_slots(self.state)
+
+    def _on_card_slots_click(self, event):
+        if self.animating or not self._can_select_item_card():
+            return
+        hit = next((entry for entry in self.item_card_hitboxes
+                    if entry[2] <= event.x <= entry[4] and entry[3] <= event.y <= entry[5]), None)
+        if hit:
+            self._open_item_card_popup(hit[1])
+
+    def _show_next_shop_popup(self):
+        if (self.shop_popup or self.item_popup or self.popup_active or self.popup_queue
+                or self.animating):
+            return
+        while self.shop_queue:
+            event = self.shop_queue.pop(0)
+            if event.get("pid") != self.pid:
+                continue
+            player = next((p for p in self.state["players"] if p["id"] == self.pid), None)
+            active_tokens = {visit["token"] for visit in player.get("shop_visits", [])} if player else set()
+            if event.get("shop_token") not in active_tokens:
+                continue
+            self._open_shop_popup(event)
+            return
+
+    def _open_shop_popup(self, event):
+        player = next((p for p in self.state["players"] if p["id"] == self.pid), None)
+        if not player:
+            return
+        popup = tk.Toplevel(self)
+        self.shop_popup = popup
+        self.shop_popup_token = event["shop_token"]
+        self.shop_available_cards = set(event.get("available_cards", []))
+        self.shop_selected_card_id = None
+        self.shop_upgrade_selected = False
+        self.shop_purchase_pending = False
+        self.shop_card_buttons = {}
+        popup.title("상점")
+        popup.transient(self.winfo_toplevel())
+        popup.resizable(False, False)
+        popup.protocol("WM_DELETE_WINDOW", self._close_shop_popup)
+
+        header = ttk.Frame(popup, padding=(12, 10, 12, 6))
+        header.pack(fill="x")
+        amount_font = ("TkDefaultFont", max(12, round(14 * self.k)), "italic")
+        self.shop_balance_label = tk.Label(header, fg="#222222", font=amount_font)
+        self.shop_balance_label.pack(side="left")
+        self.shop_remaining_label = tk.Label(
+            header, fg="#d00000", font=amount_font)
+        self.shop_remaining_label.pack(side="left", padx=(10, 0))
+
+        upgrade_row = ttk.Frame(header)
+        upgrade_row.pack(side="right")
+        self.shop_upgrade_button = tk.Button(
+            upgrade_row, text="", width=2, height=1, borderwidth=2,
+            command=self._toggle_shop_upgrade,
+        )
+        self.shop_upgrade_button.pack(side="left", padx=(0, 6))
+        ttk.Label(upgrade_row, text="기어 게이지 업그레이드 (5루찌)").pack(side="left")
+
+        body = ttk.Frame(popup, padding=(12, 0, 12, 8))
+        body.pack(fill="both", expand=True)
+        cards_frame = ttk.LabelFrame(body, text="상점 카드", padding=6)
+        cards_frame.pack(side="left", anchor="n")
+        for column in range(5):
+            cards_frame.columnconfigure(column, weight=1)
+        for card_id in range(1, SHOP_CARD_COUNT + 1):
+            row, column = divmod(card_id - 1, 5)
+            cell = ttk.Frame(cards_frame, padding=2)
+            cell.grid(row=row, column=column, padx=2, pady=2)
+            image = self._shop_card_image(card_id, SHOP_CARD_THUMB_HEIGHT)
+            available = (card_id in self.shop_available_cards
+                         and card_id in SHOP_CARDS_BY_ID)
+            button = tk.Button(
+                cell, image=image, text="" if image else f"카드 {card_id}",
+                compound="top", relief="raised", borderwidth=2,
+                state="normal" if available else "disabled",
+                command=lambda selected_id=card_id:
+                self._select_shop_card(selected_id),
+            )
+            button.pack()
+            button.bind("<Enter>", lambda _event, selected_id=card_id:
+                        self._show_shop_card_preview(selected_id))
+            button.bind("<Leave>", self._clear_shop_card_preview)
+            self.shop_card_buttons[card_id] = button
+
+            if card_id not in SHOP_CARDS_BY_ID:
+                status = "판매 안 함"
+            elif card_id not in self.shop_available_cards:
+                status = "판매 안 함"
+            elif self._shop_stock(card_id) <= 0:
+                status = "품절"
+            else:
+                status = ""
+            ttk.Label(cell, text=status, foreground="#a00000").pack()
+
+        preview_frame = ttk.LabelFrame(body, text="카드 확대", padding=8)
+        preview_frame.pack(side="left", padx=(12, 0), anchor="n")
+        self.shop_preview_label = ttk.Label(
+            preview_frame, text="카드에 마우스를 올리면 확대됩니다.",
+            anchor="center", justify="center")
+        self.shop_preview_label.pack()
+        self.shop_description_label = ttk.Label(
+            preview_frame, text="", wraplength=210, justify="left")
+        self.shop_description_label.pack(anchor="w", pady=(6, 0))
+
+        footer = ttk.Frame(popup, padding=(12, 0, 12, 12))
+        footer.pack(fill="x")
+        self.shop_buy_button = ttk.Button(
+            footer, text="구매", command=self._request_shop_purchase)
+        self.shop_buy_button.pack(side="right")
+        ttk.Button(
+            footer, text="닫기", command=self._close_shop_popup,
+        ).pack(side="right", padx=(0, 6))
+        self._refresh_shop_popup()
+        popup.update_idletasks()
+        popup.grab_set()
+
+    def _shop_stock(self, card_id):
+        stock = self.state.get("shop_stock", {})
+        return stock.get(card_id, stock.get(str(card_id), 0))
+
+    def _select_shop_card(self, card_id):
+        if self.shop_purchase_pending:
+            return
+        if card_id not in self.shop_available_cards or card_id not in SHOP_CARDS_BY_ID:
+            return
+        if self._shop_stock(card_id) <= 0:
+            return
+        self.shop_selected_card_id = card_id
+        self._refresh_shop_popup()
+
+    def _toggle_shop_upgrade(self):
+        player = next((p for p in self.state["players"] if p["id"] == self.pid), None)
+        if (self.shop_purchase_pending or not player
+                or player.get("gear_gauge_upgraded")):
+            return
+        self.shop_upgrade_selected = not self.shop_upgrade_selected
+        self._refresh_shop_popup()
+
+    def _show_shop_card_preview(self, card_id):
+        if not self.shop_preview_label:
+            return
+        image = self._shop_card_image(card_id, SHOP_CARD_PREVIEW_HEIGHT)
+        card = SHOP_CARDS_BY_ID.get(card_id)
+        self.shop_preview_image = image
+        self.shop_preview_label.configure(image=image, text="" if image else "이미지 없음")
+        self.shop_description_label.configure(
+            text=(card["description"] if card else "현재 구매할 수 없는 카드입니다."))
+
+    def _clear_shop_card_preview(self, _event=None):
+        if self.shop_preview_label:
+            self.shop_preview_image = None
+            self.shop_preview_label.configure(image="", text="카드에 마우스를 올리면 확대됩니다.")
+            self.shop_description_label.configure(text="")
+
+    def _refresh_shop_popup(self):
+        if not self.shop_popup or not self.shop_popup.winfo_exists():
+            return
+        player = next((p for p in self.state["players"] if p["id"] == self.pid), None)
+        if not player:
+            return
+        upgraded = player.get("gear_gauge_upgraded", False)
+        if upgraded:
+            self.shop_upgrade_selected = False
+        card_id = self.shop_selected_card_id
+        card_cost = SHOP_CARDS_BY_ID[card_id]["cost_luci"] if card_id in SHOP_CARDS_BY_ID else 0
+        upgrade_cost = 5 if self.shop_upgrade_selected and not upgraded else 0
+        total_cost = card_cost + upgrade_cost
+        remaining = player["luci"] - total_cost
+        self.shop_balance_label.configure(text=f"보유 루찌: {player['luci']} 루찌")
+        self.shop_remaining_label.configure(text=f"선택 후: {remaining} 루찌")
+
+        for card_id, button in self.shop_card_buttons.items():
+            available = (card_id in self.shop_available_cards
+                         and card_id in SHOP_CARDS_BY_ID
+                         and self._shop_stock(card_id) > 0)
+            button.configure(
+                relief="sunken" if card_id == self.shop_selected_card_id else "raised",
+                state="normal" if available and not self.shop_purchase_pending else "disabled",
+            )
+        self.shop_upgrade_button.configure(
+            text="✓" if upgraded or self.shop_upgrade_selected else "",
+            relief="sunken" if upgraded or self.shop_upgrade_selected else "raised",
+            state="disabled" if upgraded or self.shop_purchase_pending else "normal",
+        )
+        card_selected = card_id is not None and card_id in self.shop_available_cards
+        upgrade_selected = self.shop_upgrade_selected and not upgraded
+        can_buy = ((card_selected or upgrade_selected)
+                   and (card_id is None or self._shop_stock(card_id) > 0)
+                   and remaining >= 0 and not self.shop_purchase_pending)
+        self.shop_buy_button.configure(
+            state="normal" if can_buy else "disabled")
+
+    def _request_shop_purchase(self):
+        if not self.shop_popup_token or self.shop_purchase_pending:
+            return
+        player = next((p for p in self.state["players"] if p["id"] == self.pid), None)
+        if not player:
+            return
+        upgrade = self.shop_upgrade_selected and not player.get("gear_gauge_upgraded", False)
+        try:
+            self.client.purchase_shop(
+                self.shop_popup_token, self.shop_selected_card_id, upgrade)
+        except OSError as error:
+            messagebox.showerror("상점 구매 요청 오류", str(error), parent=self.shop_popup)
+            return
+        self.shop_purchase_pending = True
+        self._refresh_shop_popup()
+
+    def _close_shop_popup(self, send_close=True, resume=True):
+        token = self.shop_popup_token
+        if send_close and token is not None:
+            try:
+                self.client.close_shop(token)
+            except OSError as error:
+                messagebox.showerror("상점 닫기 오류", str(error), parent=self.shop_popup)
+                return
+        popup = self.shop_popup
+        self.shop_popup = None
+        self.shop_popup_token = None
+        self.shop_available_cards = set()
+        self.shop_card_buttons = {}
+        self.shop_preview_image = None
+        self.shop_preview_label = None
+        self.shop_description_label = None
+        self.shop_balance_label = None
+        self.shop_remaining_label = None
+        self.shop_upgrade_button = None
+        self.shop_buy_button = None
+        self.shop_selected_card_id = None
+        self.shop_upgrade_selected = False
+        self.shop_purchase_pending = False
+        if popup and popup.winfo_exists():
+            popup.grab_release()
+            popup.destroy()
+        if resume:
+            self._render()
+            self._show_next_popup()
+            if self.state:
+                self._show_branch_prompt(self.state)
+
+    def _open_item_card_popup(self, card_id):
+        if not self._can_select_item_card():
+            return
+        player = next((p for p in self.state["players"] if p["id"] == self.pid), None)
+        opponents = [p for p in self.state["players"]
+                     if p["id"] != self.pid and p["connected"]]
+        if not player:
+            return
+        selectable_card_ids = ([card["id"] for card in ITEM_CARDS]
+                               if self.debug_mode else player["items"])
+        if card_id not in selectable_card_ids:
+            return
+
+        image = self._item_card_image(card_id, ITEM_CARD_DISPLAY_HEIGHT)
+        if image is None:
+            messagebox.showerror("카드 표시 오류", "카드 이미지를 불러오지 못했습니다.",
+                                 parent=self.item_popup or self.winfo_toplevel())
+            return
+
+        if self.item_popup and self.item_popup.winfo_exists():
+            popup = self.item_popup
+            if self.item_popup_card_id == card_id:
+                popup.lift()
+                return
+            for child in popup.winfo_children():
+                child.destroy()
+        else:
+            popup = tk.Toplevel(self)
+            self.item_popup = popup
+            popup.title("아이템 카드 사용")
+            popup.transient(self.winfo_toplevel())
+            popup.resizable(False, False)
+            popup.protocol("WM_DELETE_WINDOW", lambda: self._close_item_card_popup(popup))
+
+        self.item_popup_card_id = card_id
+        self.item_popup_image = image
+
+        popup.columnconfigure(0, weight=0)
+        if self.debug_mode:
+            picker = ttk.LabelFrame(popup, text="전체 카드 - 선택")
+            picker.grid(row=0, column=0, sticky="w", padx=12, pady=(12, 0))
+            for selectable_card_id in selectable_card_ids:
+                thumbnail = self._item_card_image(selectable_card_id, 64)
+                card_label = tk.Label(
+                    picker,
+                    image=thumbnail,
+                    text="" if thumbnail else f"카드 {selectable_card_id}",
+                    compound="top",
+                    relief="solid",
+                    borderwidth=1,
+                    highlightthickness=2 if selectable_card_id == card_id else 0,
+                    highlightbackground="#00a6a6",
+                    cursor="hand2",
+                )
+                card_label.pack(side="left", padx=4, pady=4)
+                card_label.bind(
+                    "<Button-1>",
+                    lambda _event, selected_id=selectable_card_id:
+                    self._open_item_card_popup(selected_id),
+                )
+            content_row = 1
+        else:
+            content_row = 0
+        popup.rowconfigure(content_row, weight=0)
+        content = ttk.Frame(popup, padding=12)
+        content.grid(row=content_row, column=0, sticky="nsew")
+        content.columnconfigure(0, weight=0)
+        content.columnconfigure(1, weight=0)
+        ttk.Label(content, image=image).grid(row=0, column=0, sticky="nw", padx=(0, 12))
+
+        controls = ttk.Frame(content)
+        controls.grid(row=0, column=1, sticky="new")
+        effect = ITEM_CARDS_BY_ID.get(card_id, {}).get("effect", {})
+        target_type = effect.get("target")
+        requires_target = target_type in {"selected_player", "selected_player_ahead"}
+        multi_target = (card_id == 8 and any(
+            SHOP_CARDS_BY_ID.get(shop_card_id, {}).get("effect", {}).get("type")
+            == "multi_target_item_attack"
+            for shop_card_id in player.get("shop_cards", [])))
+        if target_type == "selected_player":
+            target_players = [p for p in self.state["players"] if p["connected"]]
+        elif target_type == "selected_player_ahead":
+            target_players = [p for p in opponents
+                              if p["progress"] > player["progress"]]
+        else:
+            target_players = opponents
+        target_label = ("미사일 대상 1~2명 선택" if multi_target
+                        else "플레이어 선택" if target_type == "selected_player"
+                        else "상대 플레이어 선택" if requires_target
+                        else "상대 플레이어 선택 불필요")
+        targets = ttk.LabelFrame(controls, text=target_label, padding=8)
+        targets.pack(fill="x")
+        target_pid = tk.IntVar(master=popup,
+                               value=target_players[0]["id"] if target_players else -1)
+        target_pids = {}
+        for opponent in target_players:
+            photo = self._character_image(opponent["slot"], round(76 * self.k))
+            if multi_target:
+                variable = tk.BooleanVar(master=popup, value=False)
+                target_pids[opponent["id"]] = variable
+                options = {
+                    "text": opponent["name"], "variable": variable,
+                    "compound": "top", "padx": 8, "pady": 6,
+                    "bg": "#f0f0f0", "activebackground": "#d9f2ff",
+                    "selectcolor": "#b8e8ff",
+                }
+                if photo:
+                    options["image"] = photo
+                tk.Checkbutton(targets, **options).pack(side="left", padx=3)
+            else:
+                options = {
+                    "text": opponent["name"], "value": opponent["id"],
+                    "variable": target_pid, "compound": "top",
+                    "indicatoron": False, "padx": 8, "pady": 6,
+                    "bg": "#f0f0f0", "activebackground": "#d9f2ff",
+                    "selectcolor": "#b8e8ff", "relief": "raised",
+                    "state": "normal" if requires_target else "disabled",
+                }
+                if photo:
+                    options["image"] = photo
+                tk.Radiobutton(targets, **options).pack(side="left", padx=3)
+
+        super_booster = None
+        if card_id == 3 and 4 in player.get("shop_cards", []):
+            super_booster = tk.BooleanVar(master=popup, value=False)
+            ttk.Checkbutton(
+                controls, text="슈퍼부스터 효과로 사용",
+                variable=super_booster).pack(anchor="w", pady=(8, 0))
+
+        confirmation_text = (
+            "미사일 공격 후 성공한 대상 수만큼 이동합니다."
+            if multi_target else
+            "선택한 플레이어에게 카드를 사용하시겠습니까?"
+            if requires_target else
+            "슈퍼부스터 효과를 선택해 사용할 수 있습니다."
+            if super_booster else
+            "카드를 사용하시겠습니까?")
+        ttk.Label(controls, text=confirmation_text,
+                  wraplength=300, justify="left").pack(anchor="w", pady=(18, 10))
+        buttons = ttk.Frame(controls)
+        buttons.pack(anchor="e")
+        ttk.Button(buttons, text="취소",
+                   command=lambda: self._close_item_card_popup(popup)).pack(side="right", padx=(6, 0))
+        confirm = ttk.Button(buttons, text="확인",
+                             command=lambda: self._request_item_card_use(
+                                 popup, card_id,
+                                 target_pid if requires_target and not multi_target else None,
+                                 target_pids if multi_target else None,
+                                 super_booster))
+        confirm.pack(side="right")
+        if requires_target and not target_players:
+            confirm.state(["disabled"])
+        popup.update_idletasks()
+        window_width = content.winfo_reqwidth() + 24
+        window_height = content.winfo_reqheight() + 24
+        if self.debug_mode:
+            window_width = max(window_width, picker.winfo_reqwidth() + 24)
+            window_height += picker.winfo_reqheight() + 12
+        screen_width, screen_height = popup.winfo_screenwidth(), popup.winfo_screenheight()
+        x = max(0, (screen_width - window_width) // 2)
+        y = max(0, (screen_height - window_height) // 2)
+        popup.geometry(f"{window_width}x{window_height}+{x}+{y}")
+        if not popup.grab_current():
+            popup.grab_set()
+
+    def _close_item_card_popup(self, popup, resume=True):
+        if popup.winfo_exists():
+            popup.destroy()
+        self.item_popup = None
+        self.item_popup_image = None
+        self.item_popup_card_id = None
+        if resume:
+            self._show_next_popup()
+            if self.state:
+                self._show_branch_prompt(self.state)
+
+    def _request_item_card_use(self, popup, card_id, target_pid,
+                               target_pids=None, use_super_booster=None):
+        if not self._can_select_item_card():
+            self._close_item_card_popup(popup)
+            self._log("! 자신의 차례에만 아이템 카드를 선택할 수 있습니다.")
+            return
+        try:
+            selected_targets = ([pid for pid, variable in target_pids.items()
+                                 if variable.get()] if target_pids is not None else None)
+            if selected_targets is not None and not 1 <= len(selected_targets) <= 2:
+                messagebox.showerror(
+                    "대상 선택 오류", "미사일 대상을 한 명 또는 두 명 선택해 주세요.",
+                    parent=popup)
+                return
+            self.client.use_item(
+                card_id, target_pid.get() if target_pid else None,
+                selected_targets,
+                use_super_booster.get() if use_super_booster else False)
+        except OSError as error:
+            messagebox.showerror("카드 사용 요청 오류", str(error), parent=popup)
+            return
+        self._close_item_card_popup(popup)
 
     def _draw_board(self, s, override=None):
         """override: {player id: 칸 인덱스} — 해당 플레이어 말의 위치를 일시적으로 덮어쓴다(이동 애니메이션)."""
@@ -1405,6 +2300,7 @@ class GameFrame(ttk.Frame):
         size = int(size)
         ox = (cw - size * m["width"]) // 2
         oy = (ch - size * m["height"]) // 2
+        self.board_geometry = (cells, size, ox, oy)
         self.editor_grid_geometry = (size, ox, oy) if self.edit_mode else None
 
         if self.board_background_image:
@@ -1588,7 +2484,8 @@ class GameFrame(ttk.Frame):
             dx = (-1 if p["slot"] % 2 == 0 else 1) * size * 0.2
             dy = (-1 if p["slot"] < 2 else 1) * size * 0.2
             photo = self._character_image(p["slot"], max(18, round(size * 0.4)))
-            outline = "#000" if p["id"] != s["turn"] else "#ffffff"
+            outline = ("#00ffff" if self.debug_teleport_armed and p["id"] == self.pid
+                       else "#000" if p["id"] != s["turn"] else "#ffffff")
             if photo:
                 half_w, half_h = photo.width() / 2 + 2, photo.height() / 2 + 2
                 c.create_oval(cx + dx - half_w, cy + dy - half_h,
@@ -1602,9 +2499,32 @@ class GameFrame(ttk.Frame):
         if self.edit_mode:
             self._draw_editor_controls(s, path, size, ox, oy)
             self._draw_editor_edge_hover()
+        self._draw_status_effects(s, c, cw)
         if self.popup_active:
             self._draw_popup(self.popup_text, self.popup_color)
 
+    def _draw_status_effects(self, state, canvas, canvas_width):
+        player = next((p for p in state["players"] if p["id"] == self.pid), None)
+        if not player:
+            return
+        effects = [effect for effect in player.get("status_effects", [])
+                   if effect in STATUS_IMAGE_FILES]
+        if not effects:
+            return
+        icon_size = max(18, round(26 * self.k))
+        gap = 4
+        total_width = len(effects) * icon_size + (len(effects) - 1) * gap
+        x = max(8, canvas_width - total_width - 8)
+        for effect in effects:
+            image = self._status_effect_image(effect, icon_size)
+            if image:
+                canvas.create_image(x, 8, image=image, anchor="nw",
+                                    tags=("status-effect",))
+            else:
+                canvas.create_text(x + icon_size / 2, 8 + icon_size / 2,
+                                   text="!", fill="#c0392b",
+                                   tags=("status-effect",))
+            x += icon_size + gap
     def _draw_editor_controls(self, s, path, size, ox, oy):
         choices = ("없음", *EDITOR_EFFECTS.keys())
         for index, (x, y) in enumerate(path):
@@ -1644,8 +2564,9 @@ class GameFrame(ttk.Frame):
 
 
 class App(tk.Tk):
-    def __init__(self):
+    def __init__(self, debug_mode=False):
         super().__init__()
+        self.debug_mode = debug_mode
         self.title("카트라이더 보드게임")
         self.resizable(False, False)
         self.client = self.server = self.frame = None
@@ -1687,5 +2608,5 @@ class App(tk.Tk):
         self.destroy()
 
 
-def run():
-    App().mainloop()
+def run(debug_mode=False):
+    App(debug_mode=debug_mode).mainloop()
