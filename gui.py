@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from tkinter import font as tkfont
 
+import errorlog
 from client import NetClient
 from game import (CHARACTER_NAMES, COLORS, ITEM_CARDS, MAX_LAPS,
                   MAX_NAME_LENGTH, MAX_PLAYERS, SHOP_CARDS)
@@ -949,6 +950,17 @@ class GameFrame(ttk.Frame):
             pass
 
     def _poll(self):
+        try:
+            if not self._process_inbox():
+                return
+        except Exception:
+            errorlog.record("메시지 처리 오류")
+            self.animating = False
+            self._log("! 화면 갱신 중 오류가 발생했습니다. error.log 를 확인해 주세요.")
+        self.after(100, self._poll)
+
+    def _process_inbox(self):
+        """대기 중인 서버 메시지를 처리한다. 연결이 끊겨 화면을 떠나면 False."""
         while not self.animating and not self.client.inbox.empty():
             msg = self.client.inbox.get()
             kind = msg.get("type")
@@ -977,8 +989,8 @@ class GameFrame(ttk.Frame):
             elif kind == "closed":
                 messagebox.showinfo("연결 종료", "서버와의 연결이 끊어졌습니다.")
                 self.app.show_launcher()
-                return
-        self.after(100, self._poll)
+                return False
+        return True
 
     def _apply_state(self, s):
         self.state = s
@@ -2564,6 +2576,12 @@ class GameFrame(ttk.Frame):
 
 
 class App(tk.Tk):
+    def report_callback_exception(self, exc, val, tb):
+        # 창 없는 실행 파일에서는 오류가 보이지 않으므로 파일에 남기고, 멈춘 연출 상태를 풀어 준다.
+        errorlog.record("Tk 콜백 오류", (exc, val, tb))
+        if isinstance(self.frame, GameFrame):
+            self.frame.animating = False
+
     def __init__(self, debug_mode=False):
         super().__init__()
         self.debug_mode = debug_mode

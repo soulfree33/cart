@@ -954,6 +954,8 @@ class Game:
     def _movement_options_at(self, cell, previous_cell):
         options = [next_cell for next_cell in self.map.neighbor_ids(cell)
                    if next_cell != previous_cell]
+        options = [next_cell for next_cell in options
+                   if self.map.can_advance(cell, next_cell)] or options
         source = self.map.cells[cell]
         is_drift_source = any(effect["cell"] == cell and effect.get("type") == "drift"
                               and "to" not in effect for effect in self.map.effects)

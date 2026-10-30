@@ -34,6 +34,11 @@ branches는 이전 맵 파일과의 호환을 위한 형식이다. branches의 c
 분기점에 도착한 플레이어는 straight/left/right 중 하나를 선택한다.
 branch_cells는 branches에서 사용한 좌표를 자동 저장하는 필드이며, 맵 로드 시 branches로 재구성된다.
 
+진행 방향 (branches 가 없는 맵)
+출발 타일에서 나가는 첫 칸(start_direction, 없으면 오른쪽→아래→왼쪽→위 순서로 연결된 첫 칸)부터 출발 타일로
+되돌아오는 방향으로만 진행한다. 갈라졌다 다시 합쳐지는 구간에서도 반대 방향 칸으로는 이동하지 않는다.
+후진/추락 같은 칸 효과와 카드 효과만 이 방향을 거스를 수 있다.
+
 칸 효과 (기본적으로 플레이어가 그 칸에 멈췄을 때 발동. 한 칸에 여러 개를 둘 수 있고 적은 순서대로 적용된다)
 
   type            설명                          파라미터
@@ -247,6 +252,97 @@ class GameMap:
         x2, y2 = self.cells[target]
         return {(0, -1): "up", (1, 0): "right", (0, 1): "down", (-1, 0): "left"}.get(
             (x2 - x1, y2 - y1))
+
+    def can_advance(self, source, target):
+        """source 에서 target 으로 진행하는 것이 맵의 진행 방향(출발 방향 → 결승선)과 맞는지 판단한다.
+
+        출발 타일에서 나가는 첫 칸을 전위 0, 출발 타일로 되돌아오는 칸을 전위 1 로 보고 맵을 저항 회로처럼 풀어
+        전위가 낮은 쪽에서 높은 쪽으로만 진행하게 한다. 갈라졌다 합쳐지는 구간에서도 되돌아가지 않는다.
+        """
+        if (source, target) in self._drift_edge_ids():
+            return True
+        flow = self._flow_potentials()
+        if flow is None or self.branches:
+            return True
+        potentials, first, ends = flow
+        if source == 0:
+            return target == first
+        if target == 0:
+            return source in ends
+        if source not in potentials or target not in potentials:
+            return True
+        return potentials[target] - potentials[source] > -1e-9
+
+    def _drift_edge_ids(self):
+        ids = {coord: index for index, coord in enumerate(self.cells)}
+        return {(ids[source], ids[target]) for source, target in self.drift_connections
+                if source in ids and target in ids}
+
+    def _flow_potentials(self):
+        key = (tuple(self.path), None if self.connections is None else tuple(self.connections),
+               tuple(self.drift_connections), self.start_direction, repr(self.branches))
+        cached = getattr(self, "_flow_cache", None)
+        if cached is None or cached[0] != key:
+            cached = (key, self._solve_flow_potentials())
+            self._flow_cache = cached
+        return cached[1]
+
+    def _solve_flow_potentials(self):
+        cells = self.cells
+        ids = {coord: index for index, coord in enumerate(cells)}
+        adjacent = {index: set() for index in range(len(cells))}
+        for first, second in self.connection_pairs:
+            if first in ids and second in ids:
+                adjacent[ids[first]].add(ids[second])
+                adjacent[ids[second]].add(ids[first])
+        if self.start_direction is not None:
+            first = ids.get(self.start_direction)
+        else:
+            first = next((neighbor for direction in DEFAULT_START_DIRECTION_ORDER
+                          for neighbor in sorted(adjacent[0])
+                          if self.direction_between(0, neighbor) == direction), None)
+        ends = adjacent[0] - {first}
+        if first not in adjacent[0] or not ends:
+            return None
+
+        known = {first: 0.0, **{end: 1.0 for end in ends}}
+        reached = set(known)
+        pending = list(known)
+        while pending:
+            for neighbor in adjacent[pending.pop()] - {0}:
+                if neighbor not in reached:
+                    reached.add(neighbor)
+                    pending.append(neighbor)
+        unknown = sorted(reached - set(known))
+        position = {cell: index for index, cell in enumerate(unknown)}
+        size = len(unknown)
+        matrix = [[0.0] * (size + 1) for _ in range(size)]
+        for cell in unknown:
+            row = matrix[position[cell]]
+            for neighbor in adjacent[cell] - {0}:
+                row[position[cell]] += 1.0
+                if neighbor in known:
+                    row[size] += known[neighbor]
+                else:
+                    row[position[neighbor]] -= 1.0
+        for column in range(size):
+            pivot = max(range(column, size), key=lambda r: abs(matrix[r][column]))
+            if abs(matrix[pivot][column]) < 1e-12:
+                return None
+            matrix[column], matrix[pivot] = matrix[pivot], matrix[column]
+            for row in range(column + 1, size):
+                factor = matrix[row][column] / matrix[column][column]
+                if factor:
+                    for k in range(column, size + 1):
+                        matrix[row][k] -= factor * matrix[column][k]
+        values = [0.0] * size
+        for row in range(size - 1, -1, -1):
+            total = matrix[row][size] - sum(
+                matrix[row][k] * values[k] for k in range(row + 1, size))
+            values[row] = total / matrix[row][row]
+        potentials = dict(known)
+        potentials.update({cell: values[position[cell]] for cell in unknown})
+        return potentials, first, ends
 
     def _validate_effect(self, e):
         if not isinstance(e.get("cell"), int) or not (0 <= e["cell"] < len(self.path)):

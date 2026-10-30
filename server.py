@@ -2,6 +2,7 @@
 import socket
 import threading
 
+import errorlog
 from game import Game, GameError, MAX_PLAYERS
 from mapdata import GameMap, default_map
 from protocol import DEFAULT_PORT, LineReader, ProtocolError, encode
@@ -166,6 +167,13 @@ class GameServer:
                             self._broadcast_state()
                     except GameError as e:
                         self._send(conn, {"type": "error", "text": str(e)})
+                        if pid is None:
+                            break
+                    except Exception:
+                        # 규칙 처리 중 예기치 못한 오류가 나도 플레이어 연결을 끊지 않는다.
+                        errorlog.record(f"요청 처리 오류: {kind}")
+                        self._send(conn, {"type": "error",
+                                          "text": "서버에서 요청을 처리하지 못했습니다. error.log 를 확인해 주세요."})
                         if pid is None:
                             break
         except (OSError, ProtocolError):
